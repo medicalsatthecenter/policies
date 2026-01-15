@@ -1,0 +1,60 @@
+name: DevSecOps - Security Scans
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  security:
+    name: Security Scans
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Essential for finding secrets in history
+
+      # 1. Secret Scan (TruffleHog)
+      # We manually run the CLI to ensure stdout is captured to a file
+      - name: Secret Scan (TruffleHog)
+        run: |
+          docker run --rm -v "$(pwd):/pwd" trufflesecurity/trufflehog:latest \
+          filesystem /pwd --json > trufflehog-report.json || true
+
+      # 2. SAST (Semgrep)
+      # We use the official action but ensure it doesn't conflict with dashboard logins
+      - name: SAST (Semgrep)
+        uses: returntocorp/semgrep-action@v1
+        with:
+          config: "p/security-audit"
+          # This creates semgrep.sarif in the root workspace
+          generateSarif: "1" 
+        #env:
+          # Remove token if you want ONLY local reports and no dashboard sync
+          #SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+
+      # 3. Dependency Scan (Trivy)
+      # Configured to save as JSON for consistent artifact collection
+      - name: Dependency Scan (Trivy)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          format: 'json'
+          output: 'trivy-dependency-report.json'
+
+      # 4. Upload ALL Security Scan Reports
+      # if: always() ensures you get reports even if a scan fails
+      - name: Upload Security Scan Reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-scan-reports
+          path: |
+            trufflehog-report.json
+            semgrep.sarif
+            trivy-dependency-report.json

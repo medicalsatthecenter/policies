@@ -1,0 +1,82 @@
+name: Build & Push Docker Image to ECR
+
+on:
+  workflow_run:
+    workflows: ["DevSecOps - Security Scans"]
+    types:
+      - completed
+
+jobs:
+  deploy:
+    name: Build & Push to ECR
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+     
+      - name: Login to ECR
+        run: |
+          aws ecr get-login-password \
+          --region ${{ secrets.AWS_REGION }} | \
+          docker login --username AWS --password-stdin \
+          730335536421.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
+
+      
+      - name: Build Docker image
+        run: docker build -t ehr-backend:${{ github.sha }} .
+
+      #  Container Scan
+      - name: Container Scan (Trivy)
+        run: |
+          trivy image \
+          --format json \
+          --output trivy-report.json \
+          ehr-backend:${{ github.sha }} || true
+
+      - name: Fail on Critical/High Vulnerabilities
+        run: |
+          trivy image \
+          --exit-code 1 \
+          --severity CRITICAL,HIGH \
+          ehr-backend:${{ github.sha }}
+
+      #  Upload Container Scan Report
+      - name: Upload Trivy Report
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: container-scan-reports
+          path: trivy-report.json
+
+      
+      - name: Tag Docker image
+        run: |
+          docker tag ehr-backend:${{ github.sha }} \
+          730335536421.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_REPOSITORY }}:${{ github.sha }}
+
+          docker tag ehr-backend:${{ github.sha }} \
+          730335536421.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_REPOSITORY }}:latest
+
+    
+      - name: Push Docker images
+        run: |
+          docker push 730335536421.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_REPOSITORY }}:${{ github.sha }}
+          docker push 730335536421.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_REPOSITORY }}:latest
+
+     
+      - name: Cleanup Docker
+        run: |
+          docker image prune -af
+          docker container prune -f
+          docker volume prune -f
