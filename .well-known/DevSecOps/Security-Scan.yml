@@ -1,58 +1,114 @@
-name: DevSecOps - Security Scans
-
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [ main ]
+  pull_request:
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
 
 jobs:
   security:
-    name: Security Scans
+    name: DevSecOps Security Pipeline
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      security-events: write
 
     env:
       SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+      # Variable for the unified report folder
+      REPORT_DIR: "DevSecOps - Security Scans"
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0 # Essential for finding secrets in history
+    
+    # 1. Checkout (full history for secret scanning)
+    
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
 
-      # 1. Secret Scan (TruffleHog)
-      - name: Secret Scan (TruffleHog)
-        run: |
-          docker run --rm -v "$(pwd):/pwd" trufflesecurity/trufflehog:latest \
-          filesystem /pwd --json > trufflehog-report.json || true
+    # Create the directory before scans start
+    - name: Create Security Report Directory
+      run: mkdir -p "${{ env.REPORT_DIR }}"
 
-      # 2. SAST (Semgrep)
-      - name: SAST Scan (Semgrep)
-        uses: docker://semgrep/semgrep
-        with:
-          args: >
-            semgrep ci
-            --sarif
-            --output semgrep.sarif
-        continue-on-error: true
+    
+    # 2. Secrets Scan (TruffleHog) – FAIL on verified secrets
+    
+    - name: Secret Scan (TruffleHog)
+      run: |
+        docker run --rm -v "$(pwd):/pwd" trufflesecurity/trufflehog:latest \
+        filesystem /pwd \
+        --only-verified \
+        --fail \
+        --json > "${{ env.REPORT_DIR }}/trufflehog-report.json"
 
-      # 3. Dependency Scan (Trivy)
-      - name: Dependency Scan (Trivy)
-        uses: aquasecurity/trivy-action@master
-        with:
-          scan-type: 'fs'
-          format: 'json'
-          output: 'trivy-dependency-report.json'
+    
+    # 3. SAST (Semgrep CI – Correct Usage)
+    
+    - name: SAST Scan (Semgrep)
+      uses: docker://semgrep/semgrep
+      with:
+        args: >
+          semgrep ci
+          --sarif
+          --output semgrep.sarif
 
-      # 4. Upload ALL Security Scan Reports
-      - name: Upload Security Scan Reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: security-scan-reports
-          path: |
-            trufflehog-report.json
-            semgrep.sarif
-            trivy-dependency-report.json
+    # Moving the file to the folder after generation to ensure compatibility
+    - name: Move Semgrep Report to Folder
+      if: always()
+      run: mv semgrep.sarif "${{ env.REPORT_DIR }}/"
+
+    
+    # 4. GitHub Native SAST (CodeQL – Auto Detect Languages) 
+    
+    # - name: Initialize CodeQL
+    #   uses: github/codeql-action/init@v3
+
+    # - name: CodeQL Analysis
+    #   uses: github/codeql-action/analyze@v3
+
+    
+    # 5. Dependency Vulnerability Scan (Trivy)
+    #    FAIL on HIGH & CRITICAL
+    
+    - name: Dependency Scan (Trivy)
+      uses: aquasecurity/trivy-action@0.20.0
+      with:
+        scan-type: fs
+        severity: HIGH,CRITICAL
+        exit-code: 1
+        format: json
+        output: "${{ env.REPORT_DIR }}/trivy-dependency-report.json"
+
+    
+    # 6. IaC Scan (Terraform / Kubernetes / Helm)
+    
+    - name: IaC Scan (Trivy)
+      uses: aquasecurity/trivy-action@0.20.0
+      with:
+        scan-type: config
+        severity: HIGH,CRITICAL
+        exit-code: 1
+        format: json
+        output: "${{ env.REPORT_DIR }}/trivy-iac-report.json"
+
+    
+    # 7. Supply Chain Security – SBOM Generation
+    
+    - name: Generate SBOM (CycloneDX)
+      uses: anchore/sbom-action@v0
+      with:
+        format: cyclonedx-json
+        output-file: "${{ env.REPORT_DIR }}/sbom.json"
+
+    
+    # 8. Upload Security Artifacts (Audit Evidence)
+    
+    - name: Upload Security Reports
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: DevSecOps-Security-Scans
+        # This points to the folder containing all reports
+        path: "${{ env.REPORT_DIR }}/"
