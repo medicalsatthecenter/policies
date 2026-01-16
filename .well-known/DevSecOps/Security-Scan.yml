@@ -1,7 +1,13 @@
+name: DevSecOps - Security Scans
+
 on:
   workflow_dispatch:
   push:
     branches: [ main ]
+     workflow_run:
+    workflows: ["Health Check ehrx backend"]
+    types:
+      - completed
   pull_request:
 
 permissions:
@@ -16,8 +22,6 @@ jobs:
 
     env:
       SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
-      # Variable for the unified report folder
-      REPORT_DIR: "DevSecOps - Security Scans"
 
     steps:
     
@@ -28,10 +32,6 @@ jobs:
       with:
         fetch-depth: 0
 
-    # Create the directory before scans start
-    - name: Create Security Report Directory
-      run: mkdir -p "${{ env.REPORT_DIR }}"
-
     
     # 2. Secrets Scan (TruffleHog) – FAIL on verified secrets
     
@@ -41,7 +41,7 @@ jobs:
         filesystem /pwd \
         --only-verified \
         --fail \
-        --json > "${{ env.REPORT_DIR }}/trufflehog-report.json"
+        --json > trufflehog-report.json
 
     
     # 3. SAST (Semgrep CI – Correct Usage)
@@ -53,11 +53,6 @@ jobs:
           semgrep ci
           --sarif
           --output semgrep.sarif
-
-    # Moving the file to the folder after generation to ensure compatibility
-    - name: Move Semgrep Report to Folder
-      if: always()
-      run: mv semgrep.sarif "${{ env.REPORT_DIR }}/"
 
     
     # 4. GitHub Native SAST (CodeQL – Auto Detect Languages) 
@@ -79,7 +74,7 @@ jobs:
         severity: HIGH,CRITICAL
         exit-code: 1
         format: json
-        output: "${{ env.REPORT_DIR }}/trivy-dependency-report.json"
+        output: trivy-dependency-report.json
 
     
     # 6. IaC Scan (Terraform / Kubernetes / Helm)
@@ -91,7 +86,7 @@ jobs:
         severity: HIGH,CRITICAL
         exit-code: 1
         format: json
-        output: "${{ env.REPORT_DIR }}/trivy-iac-report.json"
+        output: trivy-iac-report.json
 
     
     # 7. Supply Chain Security – SBOM Generation
@@ -100,7 +95,7 @@ jobs:
       uses: anchore/sbom-action@v0
       with:
         format: cyclonedx-json
-        output-file: "${{ env.REPORT_DIR }}/sbom.json"
+        output-file: sbom.json
 
     
     # 8. Upload Security Artifacts (Audit Evidence)
@@ -109,6 +104,10 @@ jobs:
       if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: DevSecOps-Security-Scans
-        # This points to the folder containing all reports
-        path: "${{ env.REPORT_DIR }}/"
+        name: security-scan-reports
+        path: |
+          trufflehog-report.json
+          semgrep.sarif
+          trivy-dependency-report.json
+          trivy-iac-report.json
+          sbom.json
